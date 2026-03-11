@@ -23,7 +23,7 @@ LOG_FILE = Path(__file__).parent / "recon_log.jsonl"
 
 def get_availability(page) -> dict:
     """Load the Tock page and extract available dates/times."""
-    page.goto(TOCK_URL, wait_until="networkidle", timeout=30000)
+    page.goto(TOCK_URL, wait_until="domcontentloaded", timeout=30000)
     time.sleep(2)  # Let dynamic content settle
 
     # Try to set party size if selector exists

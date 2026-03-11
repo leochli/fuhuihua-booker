@@ -73,8 +73,8 @@ class BookingBot:
 
     def find_and_select_slot(self, page: Page) -> bool:
         """Navigate to the restaurant page and try to grab a slot."""
-        page.goto(config.TOCK_URL, wait_until="networkidle")
-        time.sleep(2)
+        page.goto(config.TOCK_URL, wait_until="domcontentloaded", timeout=60000)
+        time.sleep(5)  # Let JS render
 
         # Try to set party size
         try:
@@ -109,8 +109,8 @@ class BookingBot:
                 # Try to navigate to the specific date
                 # Tock URLs often support date params
                 date_url = f"{config.TOCK_URL}?date={target_date}&size={config.PARTY_SIZE}"
-                page.goto(date_url, wait_until="networkidle")
-                time.sleep(2)
+                page.goto(date_url, wait_until="domcontentloaded", timeout=60000)
+                time.sleep(5)
 
                 # Look for available time slots
                 slot_selectors = [
@@ -227,8 +227,13 @@ class BookingBot:
             page = context.new_page()
 
             try:
-                # Step 1: Verify session is valid
+                # Step 1: Verify session by loading the page once
                 print("Verifying session...")
+                page.goto(config.TOCK_URL, wait_until="domcontentloaded", timeout=60000)
+                time.sleep(5)
+                page.screenshot(path="/home/leochli/fuhuihua-booker/debug_page.png")
+                print("Screenshot saved: ~/fuhuihua-booker/debug_page.png")
+                print(f"Page title: {page.title()}")
 
                 # Step 2: Poll for availability
                 max_attempts = 120  # ~2 minutes at 1s intervals
