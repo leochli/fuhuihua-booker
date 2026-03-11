@@ -26,10 +26,9 @@ SESSION_DIR = "tock_session"
 POLL_INTERVAL_SECONDS = 1.0  # How often to check for availability
 PRE_DROP_START_SECONDS = 30  # Start polling this many seconds before expected drop
 
-# Expected drop time (24h format, PT). Adjust after recon.
-# Common Tock drop times: midnight, 10am, noon
-DROP_HOUR = 0
-DROP_MINUTE = 0
+# Drop time: March 15, 2026 at 6:10 PM PST (from the Tock page)
+DROP_HOUR = 18
+DROP_MINUTE = 10
 DROP_TIMEZONE = "America/Los_Angeles"
 
 # Notification settings (pick one or more)

@@ -71,78 +71,102 @@ class BookingBot:
         print(f"Loading saved session from {SESSION_STATE}")
         return str(SESSION_STATE)
 
+    def is_sold_out(self, page: Page) -> bool:
+        """Check if the page shows a sold-out message."""
+        page_text = page.inner_text("body").lower()
+        sold_out_phrases = [
+            "all reservations sold out",
+            "sold out",
+            "no availability",
+            "fully booked",
+            "no tables available",
+        ]
+        return any(phrase in page_text for phrase in sold_out_phrases)
+
     def find_and_select_slot(self, page: Page) -> bool:
         """Navigate to the restaurant page and try to grab a slot."""
         page.goto(config.TOCK_URL, wait_until="domcontentloaded", timeout=60000)
         time.sleep(5)  # Let JS render
 
-        # Try to set party size
-        try:
-            # Look for party size dropdown/selector
-            party_selectors = [
-                '[data-testid="party-size-selector"]',
-                'select[name*="party"]',
-                'button:has-text("Guest")',
-                'button:has-text("guest")',
-                '[class*="party"]',
-                '[class*="Party"]',
-            ]
-            for sel in party_selectors:
-                el = page.locator(sel).first
-                if el.is_visible(timeout=1000):
-                    el.click()
-                    time.sleep(0.5)
-                    # Try clicking the right party size option
-                    page.locator(f'text="{config.PARTY_SIZE}"').first.click()
-                    time.sleep(1)
-                    print(f"Set party size to {config.PARTY_SIZE}")
-                    break
-        except Exception:
-            print("Could not set party size (may be pre-set or not available yet)")
+        # First check: is the page showing sold out?
+        if self.is_sold_out(page):
+            print("Page says SOLD OUT — no slots available yet.")
+            return False
 
-        # Try preferred dates first, then any available date
-        all_dates = list(config.PREFERRED_DATES)
+        # Page is NOT sold out — look for actual bookable experiences/slots.
+        # Tock uses experience cards or time slot links. Only match elements
+        # that are clearly bookable (contain price or time patterns).
+        page_text = page.inner_text("body")
+        print(f"Page text preview: {page_text[:200]}...")
 
-        for target_date in all_dates:
+        # Look for Tock experience/offering links (these are the actual bookable items)
+        slot_selectors = [
+            # Tock experience cards typically have a link with the experience name + price
+            'a[href*="/experience/"]',
+            'a[href*="/event/"]',
+            # Bookable time slots on the calendar view
+            'button[data-testid="bookable-slot"]',
+            '[data-testid="experience-card"]',
+            '[data-testid="offering"]',
+        ]
+
+        for sel in slot_selectors:
+            slots = page.locator(sel)
+            count = slots.count()
+            if count > 0:
+                first_slot = slots.first
+                slot_text = first_slot.inner_text().strip()
+                print(f"FOUND BOOKABLE ITEM: {slot_text}")
+
+                if self.dry_run:
+                    print("[DRY RUN] Would click this. Stopping.")
+                    send_notification(
+                        "DRY RUN: Slot Found!",
+                        f"Fuhuihua: {slot_text} for {config.PARTY_SIZE}",
+                    )
+                    return True
+
+                first_slot.click()
+                time.sleep(3)
+                page.screenshot(path="/home/leochli/fuhuihua-booker/after_click.png")
+                return True
+
+        # Fallback: look for any date-specific availability
+        for target_date in config.PREFERRED_DATES:
             print(f"Checking date: {target_date}")
             try:
-                # Try to navigate to the specific date
-                # Tock URLs often support date params
                 date_url = f"{config.TOCK_URL}?date={target_date}&size={config.PARTY_SIZE}"
                 page.goto(date_url, wait_until="domcontentloaded", timeout=60000)
                 time.sleep(5)
 
-                # Look for available time slots
-                slot_selectors = [
-                    'button[class*="time"]',
-                    'button[class*="Time"]',
-                    'button[class*="slot"]',
-                    'button[class*="Slot"]',
-                    '[data-testid*="time"]',
-                    'a[class*="time"]',
-                    'button:has-text("PM")',
-                    'button:has-text("AM")',
-                ]
+                if self.is_sold_out(page):
+                    print(f"  {target_date}: sold out")
+                    continue
 
+                # Screenshot each date page for debugging
+                page.screenshot(
+                    path=f"/home/leochli/fuhuihua-booker/date_{target_date}.png"
+                )
+
+                # Look for bookable items on this date
                 for sel in slot_selectors:
                     slots = page.locator(sel)
                     count = slots.count()
                     if count > 0:
-                        # Found slots! Click the first available one
                         first_slot = slots.first
                         slot_text = first_slot.inner_text().strip()
-                        print(f"FOUND SLOT: {target_date} at {slot_text}")
+                        print(f"FOUND SLOT: {target_date} — {slot_text}")
 
                         if self.dry_run:
-                            print("[DRY RUN] Would click this slot. Stopping.")
+                            print("[DRY RUN] Would click this. Stopping.")
                             send_notification(
                                 "DRY RUN: Slot Found!",
-                                f"Fuhuihua: {target_date} at {slot_text} for {config.PARTY_SIZE}",
+                                f"Fuhuihua: {target_date} — {slot_text}",
                             )
                             return True
 
                         first_slot.click()
-                        time.sleep(2)
+                        time.sleep(3)
                         return True
 
             except Exception as e:
