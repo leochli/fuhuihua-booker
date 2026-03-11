@@ -1,0 +1,12 @@
+name: fuhuihua-booker
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.10
+  - pytz>=2023.3
+  - pip:
+    - playwright>=1.40.0
+    # Optional — for notifications:
+    # - twilio>=8.0.0
+    # - requests>=2.31.0
