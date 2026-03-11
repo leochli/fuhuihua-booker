@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import re
 import sys
 import time
 from datetime import datetime, timedelta
@@ -38,26 +39,60 @@ class BookingBot:
         self.dry_run = dry_run
         self.tz = pytz.timezone(config.DROP_TIMEZONE)
 
-    def wait_for_drop(self):
-        """Sleep until just before the configured drop time."""
-        now = datetime.now(self.tz)
-        drop_time = now.replace(
-            hour=config.DROP_HOUR,
-            minute=config.DROP_MINUTE,
-            second=0,
-            microsecond=0,
-        )
-        # If drop time already passed today, target tomorrow
-        if drop_time <= now:
-            drop_time += timedelta(days=1)
+    def parse_release_time(self, page: Page) -> datetime | None:
+        """Extract the next release time from the page text.
 
+        Looks for text like:
+          'New reservations will be released on March 15, 2026 at 6:10 PM PST'
+        """
+        page_text = page.inner_text("body")
+
+        # Match patterns like "March 15, 2026 at 6:10 PM PST"
+        pattern = (
+            r"released\s+on\s+"
+            r"(\w+\s+\d{1,2},?\s+\d{4})\s+"
+            r"at\s+"
+            r"(\d{1,2}:\d{2}\s*[AP]M)\s*"
+            r"(PST|PDT|PT|EST|EDT|ET|CST|CDT|CT|MST|MDT|MT)?"
+        )
+        match = re.search(pattern, page_text, re.IGNORECASE)
+        if not match:
+            print(f"Could not find release time in page text.")
+            print(f"Page text (first 500 chars): {page_text[:500]}")
+            return None
+
+        date_str = match.group(1)   # e.g. "March 15, 2026"
+        time_str = match.group(2)   # e.g. "6:10 PM"
+        tz_str = match.group(3)     # e.g. "PST"
+
+        # Parse the datetime
+        combined = f"{date_str} {time_str}"
+        # Handle with or without comma: "March 15 2026" or "March 15, 2026"
+        for fmt in ("%B %d, %Y %I:%M %p", "%B %d %Y %I:%M %p"):
+            try:
+                drop_time = datetime.strptime(combined, fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            print(f"Could not parse datetime: '{combined}'")
+            return None
+
+        # Apply timezone
+        drop_time = self.tz.localize(drop_time)
+        print(f"Parsed release time: {drop_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        return drop_time
+
+    def wait_for_drop(self, drop_time: datetime):
+        """Sleep until just before the given drop time."""
+        now = datetime.now(self.tz)
         wait_until = drop_time - timedelta(seconds=config.PRE_DROP_START_SECONDS)
         wait_seconds = (wait_until - now).total_seconds()
 
         if wait_seconds > 0:
             print(f"Drop time: {drop_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             print(f"Starting poll at: {wait_until.strftime('%H:%M:%S %Z')}")
-            print(f"Waiting {wait_seconds:.0f} seconds...")
+            print(f"Waiting {wait_seconds:.0f} seconds ({wait_seconds/3600:.1f} hours)...")
             time.sleep(wait_seconds)
 
         print("Polling window open — searching for slots...")
@@ -226,9 +261,6 @@ class BookingBot:
         print(f"  Dry run: {self.dry_run}")
         print("=" * 60)
 
-        if not skip_wait:
-            self.wait_for_drop()
-
         # Load saved session
         session_path = self.load_session()
         if not session_path:
@@ -256,16 +288,28 @@ class BookingBot:
             page = context.new_page()
 
             try:
-                # Step 1: Verify session by loading the page once
-                print("Verifying session...")
+                # Step 1: Load the page and detect release time
+                print("Loading page...")
                 page.goto(config.TOCK_URL, wait_until="domcontentloaded", timeout=60000)
                 time.sleep(5)
                 page.screenshot(path="/home/leochli/fuhuihua-booker/debug_page.png")
                 print("Screenshot saved: ~/fuhuihua-booker/debug_page.png")
                 print(f"Page title: {page.title()}")
 
-                # Step 2: Poll for availability
-                max_attempts = 120  # ~2 minutes at 1s intervals
+                # Step 2: If sold out, parse release time and wait
+                if not skip_wait and self.is_sold_out(page):
+                    drop_time = self.parse_release_time(page)
+                    if drop_time:
+                        now = datetime.now(self.tz)
+                        if drop_time > now:
+                            self.wait_for_drop(drop_time)
+                        else:
+                            print("Release time already passed — polling immediately.")
+                    else:
+                        print("WARNING: Could not detect release time. Polling now...")
+
+                # Step 3: Poll for availability
+                max_attempts = 300  # ~5 minutes at 1s intervals
                 for attempt in range(max_attempts):
                     print(f"\nAttempt {attempt + 1}/{max_attempts}")
 
