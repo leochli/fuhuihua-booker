@@ -4,3 +4,4 @@ __pycache__/
 recon_log.jsonl
 .env
 venv/
+tock_session/

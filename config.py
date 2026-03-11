@@ -18,9 +18,9 @@ PREFERRED_DATES = [
 # If no preferred dates available, accept any date within this many days
 FLEXIBLE_DAYS = 30
 
-# Tock account credentials (fill in before running)
-TOCK_EMAIL = ""
-TOCK_PASSWORD = ""
+# Auth: Google OAuth login is handled via saved browser session.
+# Run `python auth.py` once to log in manually and save your session.
+SESSION_DIR = "tock_session"
 
 # Polling
 POLL_INTERVAL_SECONDS = 1.0  # How often to check for availability

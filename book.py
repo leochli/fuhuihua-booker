@@ -5,6 +5,9 @@ Fuhuihua Tock Booking Bot
 Waits for the reservation drop, grabs a slot for party of 2, and books it.
 
 Usage:
+    # First: save your Tock session (one-time, Google OAuth)
+    python auth.py
+
     # Book at the next drop (uses config.DROP_HOUR/DROP_MINUTE)
     python book.py
 
@@ -19,12 +22,15 @@ import argparse
 import sys
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytz
 from playwright.sync_api import sync_playwright, Page, Browser
 
 import config
 from notify import send_notification
+
+SESSION_STATE = Path(__file__).parent / config.SESSION_DIR / "state.json"
 
 
 class BookingBot:
@@ -56,34 +62,14 @@ class BookingBot:
 
         print("Polling window open — searching for slots...")
 
-    def login(self, page: Page):
-        """Log into Tock account."""
-        if not config.TOCK_EMAIL or not config.TOCK_PASSWORD:
-            print("WARNING: No Tock credentials configured. Proceeding without login.")
-            print("You may not be able to complete the booking without being logged in.")
-            return False
-
-        print("Logging into Tock...")
-        page.goto("https://www.exploretock.com/login", wait_until="networkidle")
-        time.sleep(1)
-
-        # Fill email
-        email_input = page.locator('input[type="email"], input[name="email"]')
-        email_input.fill(config.TOCK_EMAIL)
-
-        # Fill password
-        password_input = page.locator('input[type="password"], input[name="password"]')
-        password_input.fill(config.TOCK_PASSWORD)
-
-        # Submit
-        submit_btn = page.locator('button[type="submit"]')
-        submit_btn.click()
-
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
-
-        print("Login complete.")
-        return True
+    def load_session(self) -> dict | None:
+        """Load saved browser session from auth.py."""
+        if not SESSION_STATE.exists():
+            print("ERROR: No saved session found.")
+            print("Run `python auth.py` first to log in via Google and save your session.")
+            return None
+        print(f"Loading saved session from {SESSION_STATE}")
+        return str(SESSION_STATE)
 
     def find_and_select_slot(self, page: Page) -> bool:
         """Navigate to the restaurant page and try to grab a slot."""
@@ -219,12 +205,18 @@ class BookingBot:
         if not skip_wait:
             self.wait_for_drop()
 
+        # Load saved session
+        session_path = self.load_session()
+        if not session_path:
+            sys.exit(1)
+
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=config.HEADLESS,
                 slow_mo=config.SLOW_MO,
             )
             context = browser.new_context(
+                storage_state=session_path,
                 user_agent=(
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -235,8 +227,8 @@ class BookingBot:
             page = context.new_page()
 
             try:
-                # Step 1: Login
-                self.login(page)
+                # Step 1: Verify session is valid
+                print("Verifying session...")
 
                 # Step 2: Poll for availability
                 max_attempts = 120  # ~2 minutes at 1s intervals
