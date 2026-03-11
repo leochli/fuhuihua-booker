@@ -235,10 +235,15 @@ class BookingBot:
             sys.exit(1)
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=config.HEADLESS,
-                slow_mo=config.SLOW_MO,
-            )
+            launch_kwargs = {
+                "headless": config.HEADLESS,
+                "slow_mo": config.SLOW_MO,
+            }
+            if config.PROXY_SERVER:
+                launch_kwargs["proxy"] = {"server": config.PROXY_SERVER}
+                print(f"Using proxy: {config.PROXY_SERVER}")
+
+            browser = p.chromium.launch(**launch_kwargs)
             context = browser.new_context(
                 storage_state=session_path,
                 user_agent=(

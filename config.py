@@ -51,3 +51,6 @@ PUSHOVER_APP_TOKEN = ""
 # Browser settings
 HEADLESS = True  # Set False to watch the browser in action
 SLOW_MO = 0  # Milliseconds to slow down actions (for debugging)
+
+# Proxy (for devservers that need a forward proxy to reach the internet)
+PROXY_SERVER = "http://fwdproxy:8080"  # Set to "" to disable

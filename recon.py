@@ -15,7 +15,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-from config import TOCK_URL, PARTY_SIZE, HEADLESS
+from config import TOCK_URL, PARTY_SIZE, HEADLESS, PROXY_SERVER
 
 
 LOG_FILE = Path(__file__).parent / "recon_log.jsonl"
@@ -97,7 +97,10 @@ def run_recon(interval_seconds: int, duration_hours: float):
     prev_slots = None
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=HEADLESS)
+        launch_kwargs = {"headless": HEADLESS}
+        if PROXY_SERVER:
+            launch_kwargs["proxy"] = {"server": PROXY_SERVER}
+        browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
