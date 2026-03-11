@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+from playwright_stealth import Stealth
 
 from config import TOCK_URL, PARTY_SIZE, HEADLESS, PROXY_SERVER
 
@@ -97,7 +98,13 @@ def run_recon(interval_seconds: int, duration_hours: float):
     prev_slots = None
 
     with sync_playwright() as p:
-        launch_kwargs = {"headless": HEADLESS}
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=IsolateOrigins,site-per-process",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ]
+        launch_kwargs = {"headless": HEADLESS, "args": launch_args}
         if PROXY_SERVER:
             launch_kwargs["proxy"] = {"server": PROXY_SERVER}
         browser = p.chromium.launch(**launch_kwargs)
@@ -105,10 +112,13 @@ def run_recon(interval_seconds: int, duration_hours: float):
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            )
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            locale="en-US",
+            timezone_id="America/Los_Angeles",
         )
         page = context.new_page()
+        Stealth().apply_stealth_sync(page)
 
         while time.time() < end_time:
             try:

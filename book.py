@@ -19,6 +19,8 @@ Usage:
 """
 
 import argparse
+import atexit
+import fcntl
 import re
 import sys
 import time
@@ -27,17 +29,67 @@ from pathlib import Path
 
 import pytz
 from playwright.sync_api import sync_playwright, Page, Browser
+from playwright_stealth import Stealth
 
 import config
 from notify import send_notification
 
 SESSION_STATE = Path(__file__).parent / config.SESSION_DIR / "state.json"
+LOCK_FILE = Path(__file__).parent / "booking.lock"
+BOOKED_MARKER = Path(__file__).parent / "booking_confirmed.txt"
+
+
+def acquire_lock() -> bool:
+    """Acquire an exclusive file lock to prevent multiple instances."""
+    try:
+        lock_fd = open(LOCK_FILE, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fd.write(f"PID {sys.argv} started at {datetime.now().isoformat()}\n")
+        lock_fd.flush()
+        # Keep the fd open (and lock held) for the lifetime of the process
+        acquire_lock._fd = lock_fd
+        atexit.register(release_lock)
+        return True
+    except (IOError, OSError):
+        return False
+
+
+def release_lock():
+    """Release the file lock."""
+    fd = getattr(acquire_lock, "_fd", None)
+    if fd:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            fd.close()
+        except Exception:
+            pass
+    try:
+        LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 class BookingBot:
     def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
+        self.booked = False  # Guard: set True after first successful booking
         self.tz = pytz.timezone(config.DROP_TIMEZONE)
+
+    def check_already_booked(self) -> bool:
+        """Check if a booking was already completed (from a previous run)."""
+        if BOOKED_MARKER.exists():
+            content = BOOKED_MARKER.read_text().strip()
+            print(f"A booking was already confirmed: {content}")
+            print("Delete booking_confirmed.txt to allow a new booking.")
+            return True
+        return False
+
+    def mark_booked(self, details: str = ""):
+        """Mark that a booking has been completed to prevent duplicates."""
+        self.booked = True
+        BOOKED_MARKER.write_text(
+            f"Booked at {datetime.now().isoformat()}\n{details}\n"
+        )
 
     def parse_release_time(self, page: Page) -> datetime | None:
         """Extract the next release time from the page text.
@@ -106,6 +158,38 @@ class BookingBot:
         print(f"Loading saved session from {SESSION_STATE}")
         return str(SESSION_STATE)
 
+    def wait_for_challenge(self, page: Page, timeout: int = 30) -> bool:
+        """Wait for Cloudflare/bot-check challenge page to resolve.
+
+        Returns True if the real page loaded, False if still stuck on challenge.
+        """
+        challenge_phrases = [
+            "security verification",
+            "verifies you are not a bot",
+            "checking your browser",
+            "just a moment",
+            "ray id",
+            "ddos protection",
+        ]
+        for i in range(timeout):
+            try:
+                page_text = page.inner_text("body").lower()
+            except Exception:
+                time.sleep(1)
+                continue
+
+            if any(p in page_text for p in challenge_phrases):
+                if i % 5 == 0:
+                    print(f"  Bot challenge detected — waiting... ({i}s)")
+                time.sleep(1)
+            else:
+                print("  Challenge cleared (or no challenge).")
+                return True
+
+        print("  WARNING: Challenge page did not resolve within timeout.")
+        page.screenshot(path="/home/leochli/fuhuihua-booker/challenge_stuck.png")
+        return False
+
     def is_sold_out(self, page: Page) -> bool:
         """Check if the page shows a sold-out message."""
         page_text = page.inner_text("body").lower()
@@ -121,7 +205,9 @@ class BookingBot:
     def find_and_select_slot(self, page: Page) -> bool:
         """Navigate to the restaurant page and try to grab a slot."""
         page.goto(config.TOCK_URL, wait_until="domcontentloaded", timeout=60000)
-        time.sleep(5)  # Let JS render
+        time.sleep(3)
+        self.wait_for_challenge(page, timeout=20)
+        time.sleep(2)  # Let JS render
 
         # First check: is the page showing sold out?
         if self.is_sold_out(page):
@@ -172,7 +258,9 @@ class BookingBot:
             try:
                 date_url = f"{config.TOCK_URL}?date={target_date}&size={config.PARTY_SIZE}"
                 page.goto(date_url, wait_until="domcontentloaded", timeout=60000)
-                time.sleep(5)
+                time.sleep(3)
+                self.wait_for_challenge(page, timeout=20)
+                time.sleep(2)
 
                 if self.is_sold_out(page):
                     print(f"  {target_date}: sold out")
@@ -376,15 +464,34 @@ class BookingBot:
         print(f"  Dry run: {self.dry_run}")
         print("=" * 60)
 
+        # Guard 1: Check if a booking was already confirmed
+        if not self.dry_run and self.check_already_booked():
+            sys.exit(0)
+
+        # Guard 2: Acquire exclusive lock (prevent multiple instances)
+        if not acquire_lock():
+            print("ERROR: Another instance of book.py is already running!")
+            print(f"If this is wrong, delete {LOCK_FILE} and retry.")
+            sys.exit(1)
+        print("Lock acquired — only this instance can book.")
+
         # Load saved session
         session_path = self.load_session()
         if not session_path:
             sys.exit(1)
 
         with sync_playwright() as p:
+            # Anti-detection: use realistic browser args
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ]
             launch_kwargs = {
                 "headless": config.HEADLESS,
                 "slow_mo": config.SLOW_MO,
+                "args": launch_args,
             }
             if config.PROXY_SERVER:
                 launch_kwargs["proxy"] = {"server": config.PROXY_SERVER}
@@ -396,17 +503,24 @@ class BookingBot:
                 user_agent=(
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
+                    "Chrome/131.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1280, "height": 800},
+                locale="en-US",
+                timezone_id="America/Los_Angeles",
             )
             page = context.new_page()
+            # Apply stealth patches to avoid bot detection
+            Stealth().apply_stealth_sync(page)
 
             try:
                 # Step 1: Load the page and detect release time
                 print("Loading page...")
                 page.goto(config.TOCK_URL, wait_until="domcontentloaded", timeout=60000)
-                time.sleep(5)
+                time.sleep(3)
+                # Wait for bot-check challenge to clear
+                self.wait_for_challenge(page, timeout=30)
+                time.sleep(2)
                 page.screenshot(path="/home/leochli/fuhuihua-booker/debug_page.png")
                 print("Screenshot saved: ~/fuhuihua-booker/debug_page.png")
                 print(f"Page title: {page.title()}")
@@ -426,6 +540,11 @@ class BookingBot:
                 # Step 3: Poll for availability
                 max_attempts = 300  # ~5 minutes at 1s intervals
                 for attempt in range(max_attempts):
+                    # Guard: stop immediately if we already booked
+                    if self.booked:
+                        print("Booking already completed this session — stopping.")
+                        break
+
                     print(f"\nAttempt {attempt + 1}/{max_attempts}")
 
                     if self.find_and_select_slot(page):
@@ -433,20 +552,23 @@ class BookingBot:
                             print("\nDry run complete.")
                             break
 
-                        # Step 3: Complete booking
+                        # Complete booking (only one attempt allowed)
                         if self.complete_booking(page):
+                            self.mark_booked(
+                                f"Party of {config.PARTY_SIZE}, dates: {config.PREFERRED_DATES}"
+                            )
                             send_notification(
                                 "BOOKED! Fuhuihua",
                                 f"Party of {config.PARTY_SIZE} — check your email for confirmation!",
                             )
                             print("\nDone! Check your Tock account for confirmation.")
-                            break
                         else:
                             send_notification(
                                 "Booking attempt — check manually",
                                 "Slot was found but checkout may need manual completion. Check screenshot.",
                             )
-                            break
+                        # Either way, stop after first booking attempt
+                        break
                     else:
                         print("No slots found. Retrying...")
                         time.sleep(config.POLL_INTERVAL_SECONDS)

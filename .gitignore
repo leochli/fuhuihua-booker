@@ -5,3 +5,5 @@ recon_log.jsonl
 .env
 venv/
 tock_session/
+booking.lock
+booking_confirmed.txt
