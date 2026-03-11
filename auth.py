@@ -1,99 +1,100 @@
 #!/usr/bin/env python3
 """
-One-time auth: log into Tock via Google and save the session for the bot.
-
-On a headless server (no display), this launches a headless Chromium with
-a remote debugging port. You port-forward from your laptop and complete
-the Google login in your local Chrome.
+One-time auth: import your Tock session cookies from your laptop browser.
 
 Usage:
-    # On the server:
-    python auth.py
-
-    # On your laptop (in another terminal):
-    ssh -L 9222:localhost:9222 your-devserver
-
-    # Then open in your local Chrome:
-    chrome://inspect/#devices
-    → Configure → add localhost:9222
-    → Click "inspect" on the Tock tab
-    → Complete Google login in the DevTools window
-    → Come back to the server terminal and press Enter
+    1. Log into Tock (exploretock.com) on your laptop via Google
+    2. Open DevTools (F12) → Console tab
+    3. Paste the JS snippet this script prints and hit Enter
+    4. Copy the JSON output
+    5. Run: python auth.py
+    6. Paste the JSON when prompted
 """
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-
 import config
 
-
 SESSION_PATH = Path(__file__).parent / config.SESSION_DIR
-DEBUG_PORT = 9222
+
+JS_SNIPPET = r"""
+// Run this in DevTools Console on exploretock.com after logging in:
+(()=>{const c=document.cookie.split('; ').map(c=>{const[name,...rest]=c.split('=');return{name,value:rest.join('='),domain:'.exploretock.com',path:'/',expires:-1,httpOnly:false,secure:true,sameSite:'None'}});copy(JSON.stringify(c));console.log('Copied '+c.length+' cookies to clipboard!')})()
+""".strip()
 
 
-def save_session():
+def import_cookies():
     SESSION_PATH.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
-    print("  Fuhuihua — Tock Login (Headless Server Mode)")
+    print("  Fuhuihua — Import Tock Session")
     print("=" * 60)
     print()
-    print(f"Launching headless browser with remote debugging on port {DEBUG_PORT}...")
+    print("Step 1: Log into Tock on your laptop browser:")
+    print("        https://www.exploretock.com/login")
+    print("        (use 'Sign in with Google')")
+    print()
+    print("Step 2: After login, open DevTools (F12) → Console")
+    print()
+    print("Step 3: Paste this JS snippet and press Enter:")
+    print()
+    print(f"  {JS_SNIPPET}")
+    print()
+    print("  → It copies the cookies to your clipboard.")
+    print()
+    print("Step 4: Paste the cookies below (Ctrl+V) and press Enter:")
     print()
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                f"--remote-debugging-port={DEBUG_PORT}",
-                "--remote-debugging-address=0.0.0.0",
-            ],
-        )
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 800},
-        )
-        page = context.new_page()
+    raw = input("> ").strip()
 
-        # Navigate to Tock login
-        page.goto("https://www.exploretock.com/login", wait_until="networkidle")
+    if not raw:
+        print("No input. Aborting.")
+        sys.exit(1)
 
-        print("Browser is running. Now on your LAPTOP:\n")
-        print("  1. Port-forward in a new terminal:")
-        print(f"     ssh -L {DEBUG_PORT}:localhost:{DEBUG_PORT} $(hostname)")
-        print()
-        print("  2. Open Chrome on your laptop and go to:")
-        print("     chrome://inspect/#devices")
-        print()
-        print(f'  3. Click "Configure" → add "localhost:{DEBUG_PORT}"')
-        print('  4. You should see the Tock page listed — click "inspect"')
-        print("  5. In the DevTools window, click 'Sign in with Google'")
-        print("     and complete the login flow")
-        print("  6. Once you're logged in and see the Tock dashboard,")
-        print("     come back HERE and press Enter")
-        print()
-        print("-" * 60)
+    try:
+        cookies = json.loads(raw)
+    except json.JSONDecodeError:
+        print("Invalid JSON. Make sure you copied the full output.")
+        sys.exit(1)
 
-        input("Press ENTER after you've logged in via DevTools... ")
+    if not isinstance(cookies, list):
+        print("Expected a JSON array of cookies.")
+        sys.exit(1)
 
-        # Save the full browser state (cookies, localStorage, etc.)
-        state_file = SESSION_PATH / "state.json"
-        context.storage_state(path=str(state_file))
+    # Convert to Playwright storage state format
+    pw_cookies = []
+    for c in cookies:
+        pw_cookies.append({
+            "name": c.get("name", ""),
+            "value": c.get("value", ""),
+            "domain": c.get("domain", ".exploretock.com"),
+            "path": c.get("path", "/"),
+            "expires": c.get("expires", -1),
+            "httpOnly": c.get("httpOnly", False),
+            "secure": c.get("secure", True),
+            "sameSite": c.get("sameSite", "None"),
+        })
 
-        print(f"\nSession saved to {state_file}")
-        print("The bot will reuse this session automatically.")
-        print("Re-run this script if your session expires (usually a few weeks).")
+    state = {
+        "cookies": pw_cookies,
+        "origins": [
+            {
+                "origin": "https://www.exploretock.com",
+                "localStorage": [],
+            }
+        ],
+    }
 
-        browser.close()
+    state_file = SESSION_PATH / "state.json"
+    with open(state_file, "w") as f:
+        json.dump(state, f, indent=2)
+
+    print(f"\nImported {len(pw_cookies)} cookies → {state_file}")
+    print("Session saved. The bot will use this automatically.")
+    print("Re-run if your session expires (usually a few weeks).")
 
 
 if __name__ == "__main__":
-    save_session()
+    import_cookies()
