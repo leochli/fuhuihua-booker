@@ -210,46 +210,161 @@ class BookingBot:
 
         return False
 
+    def select_party_and_time(self, page: Page) -> bool:
+        """After clicking an experience, select party size and first available time."""
+        print("Selecting party size and time...")
+        page.screenshot(path="/home/leochli/fuhuihua-booker/step_select.png")
+
+        # Set party size if a selector is visible
+        try:
+            party_selectors = [
+                'select[name*="party"]',
+                'select[name*="size"]',
+                '[data-testid="party-size"]',
+                'button:has-text("2 guests")',
+                'button:has-text("2 Guests")',
+            ]
+            for sel in party_selectors:
+                el = page.locator(sel).first
+                if el.is_visible(timeout=2000):
+                    if el.evaluate("el => el.tagName") == "SELECT":
+                        el.select_option(str(config.PARTY_SIZE))
+                    else:
+                        el.click()
+                    time.sleep(1)
+                    print(f"Set party size to {config.PARTY_SIZE}")
+                    break
+        except Exception as e:
+            print(f"Party size selection: {e}")
+
+        # Click first available time slot
+        time_selectors = [
+            'button[data-testid="bookable-slot"]',
+            'button[class*="TimeSlot"]',
+            'button[class*="timeslot"]',
+            'a[href*="/book"]',
+            # Tock often shows times as clickable buttons
+            'button:has-text(":00 PM")',
+            'button:has-text(":30 PM")',
+            'button:has-text(":00 AM")',
+            'button:has-text(":30 AM")',
+        ]
+        for sel in time_selectors:
+            slots = page.locator(sel)
+            if slots.count() > 0:
+                slot = slots.first
+                slot_text = slot.inner_text().strip()
+                print(f"Clicking time slot: {slot_text}")
+                slot.click()
+                time.sleep(2)
+                return True
+
+        print("No time slots found on this page")
+        page.screenshot(path="/home/leochli/fuhuihua-booker/step_no_times.png")
+        return False
+
     def complete_booking(self, page: Page) -> bool:
-        """Complete the checkout process after selecting a slot."""
-        print("Attempting to complete booking...")
+        """Navigate through Tock's multi-step checkout.
+
+        Tock prepaid flow:
+        1. Experience selected → party/time page
+        2. Add to cart / Continue
+        3. Payment page (needs saved card in Tock account)
+        4. Confirm & pay
+        """
+        print("Navigating checkout...")
+
+        # Screenshot each step for debugging
+        step = 0
+
+        def screenshot(name):
+            nonlocal step
+            step += 1
+            path = f"/home/leochli/fuhuihua-booker/checkout_{step}_{name}.png"
+            page.screenshot(path=path)
+            print(f"  Screenshot: {path}")
 
         try:
-            # Look for confirm/book/reserve button
-            confirm_selectors = [
-                'button:has-text("Confirm")',
+            # Step 1: Click through any "Continue" / "Add to Cart" / "Book" buttons
+            checkout_buttons = [
+                'button:has-text("Add to cart")',
+                'button:has-text("Continue")',
+                'button:has-text("Book Now")',
                 'button:has-text("Reserve")',
+                'button:has-text("Checkout")',
                 'button:has-text("Book")',
-                'button:has-text("Complete")',
                 'button[type="submit"]',
             ]
 
-            for sel in confirm_selectors:
-                btn = page.locator(sel).first
-                if btn.is_visible(timeout=2000):
-                    btn.click()
-                    time.sleep(3)
-                    print("Clicked confirm button")
+            max_clicks = 5  # Safety limit
+            for click_num in range(max_clicks):
+                time.sleep(2)
+                screenshot(f"before_click_{click_num}")
+                page_text = page.inner_text("body").lower()
+
+                # Check if we've reached confirmation
+                if any(w in page_text for w in ["confirmed", "thank you", "confirmation number", "booking confirmed"]):
+                    print("BOOKING CONFIRMED!")
+                    screenshot("confirmed")
+                    return True
+
+                # Check for payment/card entry page — if card not saved, we're stuck
+                if any(w in page_text for w in ["card number", "enter your card", "payment method"]):
+                    print("PAYMENT PAGE — checking for saved card...")
+                    screenshot("payment")
+                    # If there's a saved card, Tock may show it and just need a confirm click
+                    # Look for a "Complete" or "Pay" or "Confirm" button
+                    for sel in ['button:has-text("Complete")', 'button:has-text("Pay")',
+                                'button:has-text("Confirm")', 'button:has-text("Place order")']:
+                        btn = page.locator(sel).first
+                        if btn.is_visible(timeout=2000):
+                            print(f"Clicking: {btn.inner_text().strip()}")
+                            btn.click()
+                            time.sleep(3)
+                            break
+                    else:
+                        print("ERROR: No saved payment method! Add a card to your Tock account.")
+                        send_notification(
+                            "Fuhuihua Bot: PAYMENT NEEDED",
+                            "Slot selected but no saved card. Complete manually NOW!",
+                        )
+                        # Keep browser open so user can manually finish
+                        input("Complete payment manually, then press Enter...")
+                        return True
+                    continue
+
+                # Try clicking the next checkout button
+                clicked = False
+                for sel in checkout_buttons:
+                    btn = page.locator(sel).first
+                    try:
+                        if btn.is_visible(timeout=1500):
+                            btn_text = btn.inner_text().strip()
+                            print(f"Clicking: {btn_text}")
+                            btn.click()
+                            clicked = True
+                            break
+                    except Exception:
+                        continue
+
+                if not clicked:
+                    print("No more buttons to click.")
                     break
 
-            # Check for success indicators
+            # Final check
+            time.sleep(3)
+            screenshot("final")
             page_text = page.inner_text("body").lower()
-            success_indicators = ["confirmed", "booked", "reservation", "thank you", "confirmation"]
-            if any(indicator in page_text for indicator in success_indicators):
+            if any(w in page_text for w in ["confirmed", "thank you", "confirmation"]):
                 print("BOOKING CONFIRMED!")
                 return True
 
-            # Take a screenshot for manual verification
-            screenshot_path = "/home/leochli/fuhuihua-booker/booking_result.png"
-            page.screenshot(path=screenshot_path)
-            print(f"Screenshot saved: {screenshot_path}")
-            return True  # Optimistic — check screenshot
+            print("Checkout may not be complete — check screenshots.")
+            return True  # Optimistic — screenshots will show what happened
 
         except Exception as e:
             print(f"Error during checkout: {e}")
-            screenshot_path = "/home/leochli/fuhuihua-booker/booking_error.png"
-            page.screenshot(path=screenshot_path)
-            print(f"Error screenshot saved: {screenshot_path}")
+            screenshot("error")
             return False
 
     def run(self, skip_wait: bool = False):
