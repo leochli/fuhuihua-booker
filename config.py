@@ -24,7 +24,7 @@ SESSION_DIR = "tock_session"
 
 # Polling
 POLL_INTERVAL_SECONDS = 1.0  # How often to check for availability
-PRE_DROP_START_SECONDS = 30  # Start polling this many seconds before expected drop
+PRE_DROP_START_SECONDS = 120  # Start polling this many seconds before expected drop
 
 # Drop time: March 15, 2026 at 6:10 PM PST (from the Tock page)
 DROP_HOUR = 18
@@ -51,6 +51,7 @@ PUSHOVER_APP_TOKEN = ""
 # Browser settings
 HEADLESS = True  # Set False to watch the browser in action
 SLOW_MO = 0  # Milliseconds to slow down actions (for debugging)
+USE_FIREFOX = True  # Firefox is less detectable by Cloudflare than Chromium
 
 # Proxy (for devservers that need a forward proxy to reach the internet)
 PROXY_SERVER = ""  # Set to "http://fwdproxy:8080" if needed

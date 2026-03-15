@@ -21,6 +21,7 @@ Usage:
 import argparse
 import atexit
 import fcntl
+import random
 import re
 import sys
 import time
@@ -202,12 +203,15 @@ class BookingBot:
         ]
         return any(phrase in page_text for phrase in sold_out_phrases)
 
-    def find_and_select_slot(self, page: Page) -> bool:
+    def find_and_select_slot(self, page: Page, use_reload: bool = False) -> bool:
         """Navigate to the restaurant page and try to grab a slot."""
-        page.goto(config.TOCK_URL, wait_until="domcontentloaded", timeout=60000)
-        time.sleep(3)
+        if use_reload:
+            page.reload(wait_until="domcontentloaded", timeout=60000)
+        else:
+            page.goto(config.TOCK_URL, wait_until="domcontentloaded", timeout=60000)
+        time.sleep(2 + random.uniform(0.5, 2.0))
         self.wait_for_challenge(page, timeout=20)
-        time.sleep(2)  # Let JS render
+        time.sleep(1 + random.uniform(0.5, 1.5))  # Let JS render
 
         # First check: is the page showing sold out?
         if self.is_sold_out(page):
@@ -258,9 +262,9 @@ class BookingBot:
             try:
                 date_url = f"{config.TOCK_URL}?date={target_date}&size={config.PARTY_SIZE}"
                 page.goto(date_url, wait_until="domcontentloaded", timeout=60000)
-                time.sleep(3)
+                time.sleep(2 + random.uniform(0.5, 2.0))
                 self.wait_for_challenge(page, timeout=20)
-                time.sleep(2)
+                time.sleep(1 + random.uniform(0.5, 1.5))
 
                 if self.is_sold_out(page):
                     print(f"  {target_date}: sold out")
@@ -301,16 +305,28 @@ class BookingBot:
     def select_party_and_time(self, page: Page) -> bool:
         """After clicking an experience, select party size and first available time."""
         print("Selecting party size and time...")
+
+        # Wait for the experience page to fully load after the click
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except Exception:
+            pass
+        time.sleep(2 + random.uniform(0.5, 1.5))
+        self.wait_for_challenge(page, timeout=15)
+        time.sleep(1)
+
         page.screenshot(path="/home/leochli/fuhuihua-booker/step_select.png")
 
         # Set party size if a selector is visible
         try:
+            size = config.PARTY_SIZE
             party_selectors = [
                 'select[name*="party"]',
                 'select[name*="size"]',
                 '[data-testid="party-size"]',
-                'button:has-text("2 guests")',
-                'button:has-text("2 Guests")',
+                f'button:has-text("{size} guests")',
+                f'button:has-text("{size} Guests")',
+                f'button:has-text("{size} Guest")',
             ]
             for sel in party_selectors:
                 el = page.locator(sel).first
@@ -344,6 +360,11 @@ class BookingBot:
                 slot_text = slot.inner_text().strip()
                 print(f"Clicking time slot: {slot_text}")
                 slot.click()
+                # Wait for checkout page to load after selecting time
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=10000)
+                except Exception:
+                    pass
                 time.sleep(2)
                 return True
 
@@ -386,7 +407,7 @@ class BookingBot:
 
             max_clicks = 5  # Safety limit
             for click_num in range(max_clicks):
-                time.sleep(2)
+                time.sleep(1.5 + random.uniform(0.5, 2.0))
                 screenshot(f"before_click_{click_num}")
                 page_text = page.inner_text("body").lower()
 
@@ -408,6 +429,10 @@ class BookingBot:
                         if btn.is_visible(timeout=2000):
                             print(f"Clicking: {btn.inner_text().strip()}")
                             btn.click()
+                            try:
+                                page.wait_for_load_state("domcontentloaded", timeout=10000)
+                            except Exception:
+                                pass
                             time.sleep(3)
                             break
                     else:
@@ -430,6 +455,12 @@ class BookingBot:
                             btn_text = btn.inner_text().strip()
                             print(f"Clicking: {btn_text}")
                             btn.click()
+                            # Wait for the page to settle after navigation
+                            try:
+                                page.wait_for_load_state("domcontentloaded", timeout=10000)
+                            except Exception:
+                                pass
+                            time.sleep(2)
                             clicked = True
                             break
                     except Exception:
@@ -447,8 +478,8 @@ class BookingBot:
                 print("BOOKING CONFIRMED!")
                 return True
 
-            print("Checkout may not be complete — check screenshots.")
-            return True  # Optimistic — screenshots will show what happened
+            print("Checkout did NOT complete — no confirmation found.")
+            return False
 
         except Exception as e:
             print(f"Error during checkout: {e}")
@@ -481,37 +512,61 @@ class BookingBot:
             sys.exit(1)
 
         with sync_playwright() as p:
-            # Anti-detection: use realistic browser args
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process",
-                "--no-first-run",
-                "--no-default-browser-check",
-            ]
-            launch_kwargs = {
-                "headless": config.HEADLESS,
-                "slow_mo": config.SLOW_MO,
-                "args": launch_args,
-            }
-            if config.PROXY_SERVER:
-                launch_kwargs["proxy"] = {"server": config.PROXY_SERVER}
-                print(f"Using proxy: {config.PROXY_SERVER}")
+            # Use Firefox — Cloudflare detects headless Chromium more aggressively
+            use_firefox = getattr(config, "USE_FIREFOX", True)
 
-            browser = p.chromium.launch(**launch_kwargs)
-            context = browser.new_context(
-                storage_state=session_path,
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-                locale="en-US",
-                timezone_id="America/Los_Angeles",
-            )
+            if use_firefox:
+                print("Using Firefox (less detectable by Cloudflare)")
+                launch_kwargs = {
+                    "headless": config.HEADLESS,
+                    "slow_mo": config.SLOW_MO,
+                }
+                if config.PROXY_SERVER:
+                    launch_kwargs["proxy"] = {"server": config.PROXY_SERVER}
+                    print(f"Using proxy: {config.PROXY_SERVER}")
+                browser = p.firefox.launch(**launch_kwargs)
+                context = browser.new_context(
+                    storage_state=session_path,
+                    user_agent=(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) "
+                        "Gecko/20100101 Firefox/133.0"
+                    ),
+                    viewport={"width": 1280, "height": 800},
+                    locale="en-US",
+                    timezone_id="America/Los_Angeles",
+                )
+            else:
+                print("Using Chromium with stealth patches")
+                launch_args = [
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ]
+                launch_kwargs = {
+                    "headless": config.HEADLESS,
+                    "slow_mo": config.SLOW_MO,
+                    "args": launch_args,
+                }
+                if config.PROXY_SERVER:
+                    launch_kwargs["proxy"] = {"server": config.PROXY_SERVER}
+                    print(f"Using proxy: {config.PROXY_SERVER}")
+                browser = p.chromium.launch(**launch_kwargs)
+                context = browser.new_context(
+                    storage_state=session_path,
+                    user_agent=(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 800},
+                    locale="en-US",
+                    timezone_id="America/Los_Angeles",
+                )
+
             page = context.new_page()
-            # Apply stealth patches to avoid bot detection
-            Stealth().apply_stealth_sync(page)
+            if not use_firefox:
+                Stealth().apply_stealth_sync(page)
 
             try:
                 # Step 1: Load the page and detect release time
@@ -547,10 +602,19 @@ class BookingBot:
 
                     print(f"\nAttempt {attempt + 1}/{max_attempts}")
 
-                    if self.find_and_select_slot(page):
+                    # First attempt: full goto. After that: reload to avoid re-triggering CF.
+                    if self.find_and_select_slot(page, use_reload=(attempt > 0)):
                         if self.dry_run:
                             print("\nDry run complete.")
                             break
+
+                        # Select party size and time slot before checkout
+                        if not self.select_party_and_time(page):
+                            print("Could not select party/time — navigating back to retry...")
+                            # Navigate back to the main page so next attempt starts fresh
+                            page.goto(config.TOCK_URL, wait_until="domcontentloaded", timeout=60000)
+                            time.sleep(2)
+                            continue
 
                         # Complete booking (only one attempt allowed)
                         if self.complete_booking(page):
@@ -570,8 +634,10 @@ class BookingBot:
                         # Either way, stop after first booking attempt
                         break
                     else:
-                        print("No slots found. Retrying...")
-                        time.sleep(config.POLL_INTERVAL_SECONDS)
+                        jitter = config.POLL_INTERVAL_SECONDS + random.uniform(-0.5, 1.5)
+                        jitter = max(0.3, jitter)  # Floor at 300ms
+                        print(f"No slots found. Retrying in {jitter:.1f}s...")
+                        time.sleep(jitter)
                 else:
                     send_notification(
                         "Fuhuihua Bot: No luck",
